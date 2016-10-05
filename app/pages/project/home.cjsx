@@ -11,27 +11,11 @@ module.exports = React.createClass
   contextTypes:
     geordi: React.PropTypes.object
 
-  getInitialState: ->
-    workflows: []
-
-  componentDidMount: -> 
-    @getWorkflows(@props.project)
-
-  componentWillReceiveProps: (nextProps) ->
-    if nextProps.project isnt @props.project
-      @getWorkflows(nextProps.project)
-
-  getWorkflows: (project) ->
-    # TODO: Build this kind of caching into json-api-client
-    if project._workflows?
-      @setState workflows: project._workflows
-    else
-      workflows = getWorkflowsInOrder project, {active: true, fields: 'display_name,configuration'}
-
-      workflows.then (workflows) =>
-        project._workflows = workflows
-
-        @setState workflows: project._workflows
+  getDefaultProps: ->
+    activeWorkflows: []
+    owner: {}
+    project: {}
+    user: null
 
   handleWorkflowSelection: (workflow) ->
     @props.onChangePreferences 'preferences.selected_workflow', workflow?.id
@@ -54,29 +38,27 @@ module.exports = React.createClass
         # For Gravity Spy
         else if @props.project.experimental_tools.indexOf('workflow assignment') isnt -1
           if @props.user?
-            currentWorkflowAtLevel = @state.workflows?.filter (workflow) =>
+            currentWorkflowAtLevel = @props.activeWorkflows?.filter (workflow) =>
               workflow if workflow.id is @props.preferences?.settings.workflow_id
             currentLevel = if currentWorkflowAtLevel.length > 0 then currentWorkflowAtLevel[0].configuration.level else 1
-            @state.workflows?.map (workflow) =>
+            @props.activeWorkflows?.map (workflow) =>
               if workflow.configuration.level <= currentLevel and workflow.configuration.level?
                 <Link
                   to={"/projects/#{@props.project.slug}/classify"}
-                  query={workflow: workflow.id}
                   key={workflow.id + Math.random()}
                   className="call-to-action standard-button"
                   onClick={@handleWorkflowSelection.bind this, workflow}
                 >
-                  {workflow.display_name}
+                  You've unlocked level {workflow.display_name}
                 </Link>
           else
             <Link to={"/projects/#{@props.project.slug}/classify"} className="call-to-action standard-button">
               Get started!
             </Link>
         else if @props.project.configuration?.user_chooses_workflow
-          @state.workflows.map (workflow) =>
+          @props.activeWorkflows.map (workflow) =>
             <Link
               to={"/projects/#{@props.project.slug}/classify"}
-              query={workflow: workflow.id}
               key={workflow.id + Math.random()}
               className="call-to-action standard-button"
               onClick={@handleWorkflowSelection.bind this, workflow}

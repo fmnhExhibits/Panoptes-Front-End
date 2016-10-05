@@ -1,48 +1,34 @@
 React = require 'react'
 {Link} = require 'react-router'
+apiClient = require 'panoptes-client/lib/api-client'
 talkClient = require 'panoptes-client/lib/talk-client'
-formatNumber = require './format-number'
 
 module.exports = React.createClass
   displayName: 'NotificationsLink'
 
-  componentDidMount: ->
-    @getUndeliveredCount() if @props.user
-
-  componentWillReceiveProps: ->
-    @getUndeliveredCount() if @props.user
-
-  getInitialState: ->
-    unreadCount: null
-
-  getUndeliveredCount: ->
-    delivered = false
-    page_size = 1
-    section = @props.section
-    section = "project-#{ @props.project.id }" if @props.project
-    talkClient.type('notifications').get({section, delivered, page_size}).then (notifications) =>
-      unreadCount = notifications[0]?.getMeta()?.count or 0
-      @setState {unreadCount}
+  contextTypes:
+    unreadNotificationsCount: React.PropTypes.number
 
   label: ->
-    if @state.unreadCount > 0
-      "Notifications (#{ formatNumber @state.unreadCount })"
+    if @context.unreadNotificationsCount > 0
+      <i className="fa fa-bell fa-fw" />
+    else
+      <i className="fa fa-bell-o fa-fw" />
+
+  ariaLabel: ->
+    if @context.unreadNotificationsCount > 0
+      "Notifications (#{ @context.unreadNotificationsCount } unread)"
     else
       'Notifications'
 
   render: ->
-    return null unless @props.user and @state.unreadCount?
+    return null unless @props.user and @context.unreadNotificationsCount?
 
-    {project, user} = @props
-    {section, owner, name} = @props?.params or { }
-    section or= @props.section
+    {owner, name} = @props.params
+    linkProps = @props.linkProps
+    linkProps['aria-label'] = @ariaLabel()
 
-    linkProps = Object.assign { }, @props.linkProps, {project, section, user}
-    linkParams = {section, owner, name}
-
-    if project
+    if owner and name
       <Link to="/projects/#{owner}/#{name}/notifications" {...linkProps}>{@label()}</Link>
-    else if section
-      <Link to="/#{section}/notifications" {...linkProps}>{@label()}</Link>
     else
       <Link to="/notifications" {...linkProps}>{@label()}</Link>

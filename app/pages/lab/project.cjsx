@@ -1,5 +1,5 @@
 React = require 'react'
-{History, Link, IndexLink} = require 'react-router'
+{Link, IndexLink} = require 'react-router'
 PromiseRenderer = require '../../components/promise-renderer'
 LoadingIndicator = require '../../components/loading-indicator'
 TitleMixin = require '../../lib/title-mixin'
@@ -18,7 +18,10 @@ DELETE_CONFIRMATION_PHRASE = 'I AM DELETING THIS PROJECT'
 EditProjectPage = React.createClass
   displayName: 'EditProjectPage'
 
-  mixins: [TitleMixin, History]
+  mixins: [TitleMixin]
+
+  contextTypes:
+    router: React.PropTypes.object.isRequired
 
   title: ->
     @props.project.display_name
@@ -64,10 +67,9 @@ EditProjectPage = React.createClass
           <li><Link to={@labPath('/collaborators')} activeClassName='active' className="nav-list-item" title="Add people to your team and specify what their roles are so that they have the right access to the tools they need (including access to the project while it’s private).">
             Collaborators
           </Link></li>
-          {if 'field guide' in (@props.project.experimental_tools ? [])
-            <li><Link to={@labPath('/guide')} activeClassName='active' className="nav-list-item" title="Create a persistent guide that can be viewed within your project">
-              Field guide
-            </Link></li>}
+          <li><Link to={@labPath('/guide')} activeClassName='active' className="nav-list-item" title="Create a persistent guide that can be viewed within your project">
+            Field guide
+          </Link></li>
           <li><Link to={@labPath('/tutorial')} activeClassName='active' className="nav-list-item" title="Create a pop-up tutorial for your project’s classification interface">
             Tutorial
           </Link></li>
@@ -187,7 +189,7 @@ EditProjectPage = React.createClass
   handleWorkflowCreation: (workflow) ->
     @hideCreateWorkflow()
     newLocation = Object.assign {}, @props.location, pathname: "/lab/#{@props.project.id}/workflow/#{workflow.id}"
-    @props.history.push newLocation
+    @context.router.push newLocation
     @props.project.uncacheLink 'workflows'
     @props.project.uncacheLink 'subject_sets' # An "expert" subject set is automatically created with each workflow.
 
@@ -203,7 +205,7 @@ EditProjectPage = React.createClass
 
     subjectSet.save()
       .then =>
-        @history.pushState(null, "/lab/#{@props.project.id}/subject-set/#{subjectSet.id}")
+        @context.router.push "/lab/#{@props.project.id}/subject-set/#{subjectSet.id}"
       .catch (error) =>
         @setState subjectSetCreationError: error
       .then =>
@@ -224,7 +226,7 @@ EditProjectPage = React.createClass
 
       this.props.project.delete()
         .then =>
-          @history.pushState(null, "/lab")
+          @context.router.push '/lab'
         .catch (error) =>
           @setState deletionError: error
         .then =>
@@ -233,12 +235,15 @@ EditProjectPage = React.createClass
 
 module.exports = React.createClass
   displayName: 'EditProjectPageWrapper'
-  mixins: [TitleMixin, History]
+  mixins: [TitleMixin]
   title: 'Edit'
+
+  contextTypes:
+    router: React.PropTypes.object.isRequired
 
   componentWillReceiveProps: (nextProps) ->
     unless nextProps.user
-      @history.pushState(null, "/lab")
+      @context.router.push '/lab'
 
   getDefaultProps: ->
     params:

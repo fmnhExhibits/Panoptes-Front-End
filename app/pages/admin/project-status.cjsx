@@ -16,7 +16,6 @@ EXPERIMENTAL_FEATURES = [
   'text'
   'combo'
   'dropdown'
-  'field guide'
   'mini-course'
   'hide classification summaries'
   'pan and zoom'
@@ -27,6 +26,9 @@ EXPERIMENTAL_FEATURES = [
   'invert'
   'workflow assignment'
   'Gravity Spy Gold Standard'
+  'allow workflow query'
+  'expert comparison summary'
+  'persist answers'
 ]
 
 ProjectToggle = React.createClass

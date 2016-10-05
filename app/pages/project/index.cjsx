@@ -7,8 +7,9 @@ PotentialFieldGuide = require './potential-field-guide'
 TitleMixin = require '../../lib/title-mixin'
 apiClient = require 'panoptes-client/lib/api-client'
 {sugarClient} = require 'panoptes-client/lib/sugar'
-NotificationsLink = require '../../talk/lib/notifications-link'
 classNames = require 'classnames'
+getWorkflowsInOrder = require '../../lib/get-workflows-in-order'
+isAdmin = require '../../lib/is-admin'
 
 counterpart.registerTranslations 'en',
   project:
@@ -41,6 +42,13 @@ ProjectPage = React.createClass
     setAppHeaderVariant: React.PropTypes.func
     revealSiteHeader: React.PropTypes.func
     geordi: React.PropTypes.object
+    initialLoadComplete: React.PropTypes.bool
+
+  propTypes:
+    project: React.PropTypes.object.isRequired
+    owner: React.PropTypes.object.isRequired
+    preferences: React.PropTypes.object
+    loading: React.PropTypes.bool
 
   getDefaultProps: ->
     project: null
@@ -49,9 +57,12 @@ ProjectPage = React.createClass
     loading: false
 
   getInitialState: ->
-    background: null
+    activeWorkflows: []
     avatar: null
+    background: null
+    loadingSelectedWorkflow: false
     pages: []
+    projectIsComplete: false
     selectedWorkflow: null
 
   componentDidMount: ->
@@ -60,7 +71,6 @@ ProjectPage = React.createClass
       @context.revealSiteHeader()
     document.documentElement.classList.add 'on-project-page'
     @fetchInfo @props.project
-    @getSelectedWorkflow @props.project, @props.preferences
     @updateSugarSubscription @props.project
     @context.geordi?.remember projectToken: @props.project?.slug
 
@@ -70,14 +80,24 @@ ProjectPage = React.createClass
     @updateSugarSubscription null
     @context.geordi?.forget ['projectToken']
 
-  componentWillReceiveProps: (nextProps) ->
+  componentWillReceiveProps: (nextProps, nextContext) ->
     if nextProps.project isnt @props.project
       @fetchInfo nextProps.project
-      @getSelectedWorkflow nextProps.project, nextProps.preferences
+      @getAllWorkflows(nextProps.project)
       @updateSugarSubscription nextProps.project
       @context.geordi?.remember projectToken: nextProps.project?.slug
-    else if nextProps.preferences?.preferences.selected_workflow isnt @state.selectedWorkflow?.id
-      @getSelectedWorkflow(nextProps.project, nextProps.preferences)
+
+    # Only call to get workflow if we know if there is a user or not and the project is finished loading
+    if nextContext.initialLoadComplete and not nextProps.loading and nextProps.preferences and @state.activeWorkflows.length is 0 and not @state.loadingSelectedWorkflow
+
+      if nextProps.location.query?.workflow? and ('allow workflow query' in nextProps.project.experimental_tools or @checkUserRoles(nextProps.project, nextProps.user))
+        @getAllWorkflows(nextProps.project, { id: nextProps.location.query.workflow })
+      else
+        @getAllWorkflows(nextProps.project)
+
+    if nextProps.preferences?.preferences? and @state.selectedWorkflow?
+      if nextProps.preferences?.preferences.selected_workflow isnt @state.selectedWorkflow.id
+        @getSelectedWorkflow(nextProps.project, nextProps.preferences)
 
   fetchInfo: (project) ->
     @setState
@@ -103,25 +123,59 @@ ProjectPage = React.createClass
       .then (pages) =>
         @setState {pages}
 
-  getSelectedWorkflow: (project, preferences) ->
-    @setState selectedWorkflow: 'PENDING'
-    # preference user selected workflow, then project owner set workflow, then default workflow
-    if preferences?.preferences.selected_workflow?
-      preferredWorkflowID = preferences?.preferences.selected_workflow
-    else if preferences?.settings?.workflow_id
-      preferredWorkflowID = preferences?.settings.workflow_id
-    else if project.configuration?.default_workflow 
-      preferredWorkflowID = project.configuration?.default_workflow
+  getAllWorkflows: (project, query = { active: true }) ->
+    @setState { loadingSelectedWorkflow: true }
+    getWorkflowsInOrder(project, query)
+      .then (activeWorkflows) =>
+        @setState { activeWorkflows }
+      .then =>
+        @checkIfProjectIsComplete(project)
+      .then =>
+        @getSelectedWorkflow(project, @props.preferences)
 
-    if preferredWorkflowID?
-      apiClient.type('workflows').get preferredWorkflowID, {}
-        .then (workflow) =>
-          if workflow.active
-            @setState selectedWorkflow: workflow
-          else
-            @setState selectedWorkflow: null
+  getSelectedWorkflow: (project, preferences) ->
+    # preference workflow query, then user selected workflow, then project owner set workflow, then default workflow
+    # if none of those are set, select random workflow
+    if @props.location.query?.workflow? and ('allow workflow query' in @props.project.experimental_tools or @checkUserRoles(project, @props.user))
+      preferredWorkflowID = @props.location.query.workflow
+      unless preferences?.preferences.selected_workflow is preferredWorkflowID
+        @props.onChangePreferences 'preferences.selected_workflow', preferredWorkflowID
+    else if preferences?.preferences.selected_workflow?
+      preferredWorkflowID = preferences?.preferences.selected_workflow
+    else if preferences?.settings?.workflow_id?
+      preferredWorkflowID = preferences?.settings.workflow_id
+    else if project.configuration?.default_workflow?
+      preferredWorkflowID = project.configuration?.default_workflow
     else
-      @setState selectedWorkflow: null
+      preferredWorkflowID = @selectRandomWorkflow(project)
+
+    @getWorkflow(project, preferredWorkflowID)
+
+  checkIfProjectIsComplete: (project) ->
+    projectIsComplete = (true for workflow in @state.activeWorkflows when not workflow.finished_at?).length is 0
+    @setState { projectIsComplete }
+
+  selectRandomWorkflow: (project) ->
+    if @state.activeWorkflows.length is 0
+      throw new Error "No workflows for project #{project.id}"
+      project.uncacheLink 'workflows'
+    else
+      randomIndex = Math.floor Math.random() * @state.activeWorkflows.length
+      # console.log 'Chose random workflow', @state.activeWorkflows[randomIndex].id
+      @state.activeWorkflows[randomIndex].id
+
+  getWorkflow: (project, selectedWorkflowID) ->
+    selectedWorkflowIndex = @state.activeWorkflows.findIndex (workflow, index) ->
+      workflow.id is selectedWorkflowID
+
+    if selectedWorkflowIndex is -1
+      throw new Error "No workflow #{selectedWorkflowID} for project #{project.id}"
+      @setState { selectedWorkflow: null, loadingSelectedWorkflow: false }
+    else
+      @setState {
+        selectedWorkflow: @state.activeWorkflows[selectedWorkflowIndex],
+        loadingSelectedWorkflow: false
+      }
 
   _lastSugarSubscribedID: null
 
@@ -133,6 +187,16 @@ ProjectPage = React.createClass
 
   redirectClassifyLink: (redirect) ->
     "#{redirect.replace(/\/?#?\/+$/, "")}/#/classify"
+
+  checkUserRoles: (project, user) ->
+    getUserRoles = project.get('project_roles', user_id: user.id)
+      .then ([userRoles]) =>
+        userRoles.roles
+      .catch =>
+        []
+
+    getUserRoles.then (userRoles) =>
+      isAdmin() or 'owner' in userRoles or 'collaborator' in userRoles
 
   render: ->
     projectPath = "/projects/#{@props.project.slug}"
@@ -180,14 +244,12 @@ ProjectPage = React.createClass
           <a href={@redirectClassifyLink(@props.project.redirect)} className="tabbed-content-tab" target="_blank" onClick={logClick?.bind this, 'project.nav.classify'}>
             <Translate content="project.nav.classify" />
           </a>
-        else if @state.selectedWorkflow is 'PENDING'
+        else if @state.selectedWorkflow is null
           <span className="classify tabbed-content-tab" title="Loading..." style={opacity: 0.5}>
             <Translate content="project.nav.classify" />
           </span>
         else
-          if @state.selectedWorkflow?
-            query = workflow: @state.selectedWorkflow.id
-          <Link to="#{projectPath}/classify" query={query} activeClassName="active" className="classify tabbed-content-tab" onClick={logClick?.bind this, 'project.nav.classify'}>
+          <Link to="#{projectPath}/classify" activeClassName="active" className="classify tabbed-content-tab" onClick={logClick?.bind this, 'project.nav.classify'}>
             <Translate content="project.nav.classify" />
           </Link>}
 
@@ -195,11 +257,6 @@ ProjectPage = React.createClass
           <Translate content="project.nav.talk" />
         </Link>
 
-        <NotificationsLink {...@props} linkProps={
-          activeClassName: 'active',
-          className: 'tabbed-content-tab',
-          onClick: logClick?.bind(this, 'project.nav.notifications')
-        } />
          <Link to="#{projectPath}/collections" activeClassName="active" className={collectClasses}>
           <Translate content="project.nav.collections" />
         </Link>
@@ -224,7 +281,11 @@ ProjectPage = React.createClass
         project: @props.project
         owner: @props.owner
         preferences: @props.preferences
-        onChangePreferences: @props.onChangePreferences}
+        onChangePreferences: @props.onChangePreferences
+        loadingSelectedWorkflow: @state.loadingSelectedWorkflow
+        workflow: @state.selectedWorkflow
+        activeWorkflows: @state.activeWorkflows
+        projectIsComplete: @state.projectIsComplete}
 
       {unless @props.project.launch_approved or @props.project.beta_approved
         <Translate component="p" className="project-disclaimer" content="project.disclaimer" />}
@@ -237,6 +298,10 @@ ProjectPageController = React.createClass
   displayName: 'ProjectPageController'
 
   mixins: [TitleMixin]
+
+  propTypes:
+    params: React.PropTypes.object
+    user: React.PropTypes.object
 
   title: ->
     @state.project?.display_name ? '(Loading)'
@@ -358,7 +423,7 @@ ProjectPageController = React.createClass
         if @state.error.message is 'NOT_FOUND'
           <div className="content-container">
             <p>Project <code>{slug}</code> not found.</p>
-            <p>"If you're sure the URL is correct, you might not have permission to view this project."</p>
+            <p>If you're sure the URL is correct, you might not have permission to view this project.</p>
           </div>
         else
           <div className="content-container">

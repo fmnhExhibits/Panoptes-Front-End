@@ -1,8 +1,8 @@
 React = require 'react'
 LoadingIndicator = require '../components/loading-indicator'
 getSubjectLocation = require '../lib/get-subject-location'
-VideoPlayer = require './video-player'
-PanZoom = require('./pan-zoom').default
+`import VideoPlayer from './video-player'`
+`import PanZoom from './pan-zoom'`
 
 SUBJECT_STYLE = display: 'block'
 NOOP = Function.prototype
@@ -44,10 +44,6 @@ module.exports = React.createClass
         </div>
       when 'video'
         <VideoPlayer src={src} type={type} format={format} frame={@props.frame} onLoad={@handleLoad}>
-        {if @state.loading
-          <div className="loading-cover" style={@constructor.overlayStyle}>
-            <LoadingIndicator />
-          </div>}
         </VideoPlayer>
 
     if FrameWrapper

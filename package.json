@@ -9,7 +9,7 @@
     "data-uri-to-blob": "0.0.4",
     "debounce": "~1.0.0",
     "drag-reorderable": "~0.1.0",
-    "fast-levenshtein": "~1.0.7",
+    "events": "~1.1.1",
     "jsplumb": "1.7.9",
     "lodash.intersection": "~3.2.0",
     "lodash.merge": "~2.4.1",
@@ -33,12 +33,9 @@
     "react-select": "~0.9.1",
     "react-swipe": "~3.0.0",
     "react-translate-component": "~0.10.0",
-    "remark": "~4.2.2",
     "sort-into-columns": "~1.0.0",
-    "strip-markdown": "~0.3.1",
     "sugar-client": "~1.0.1",
     "swipe-js-iso": "~2.0.1",
-    "test-shape-closeness": "0.0.1",
     "visible-element": "~1.0.1",
     "zooniverse-geordi-client": "^1.4"
   },
@@ -64,6 +61,7 @@
     "file-loader": "~0.8.5",
     "html-webpack-plugin": "~2.16.0",
     "json-loader": "~0.5.4",
+    "mocha": "~3.1.0",
     "nib": "~1.1.0",
     "publisssh": "~1.1.0",
     "react-transform-hmr": "~1.0.4",
@@ -92,6 +90,6 @@
     "stage-with-docker": "./bin/run-through-docker.sh 'npm run stage'",
     "_deploy": "export PATH_ROOT=www.zooniverse.org; npm run _build && npm run _publish",
     "deploy": "export NODE_ENV=production; npm run _deploy",
-    "test": "echo 'Integration tests have moved to the panoptes-client library.'"
+    "test": "export NODE_ENV=development; mocha test/test.js"
   }
 }

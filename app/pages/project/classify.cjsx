@@ -2,18 +2,15 @@ auth = require 'panoptes-client/lib/auth'
 React = require 'react'
 ReactDOM = require 'react-dom'
 TitleMixin = require '../../lib/title-mixin'
-HandlePropChanges = require '../../lib/handle-prop-changes'
-PromiseToSetState = require '../../lib/promise-to-set-state'
 apiClient = require 'panoptes-client/lib/api-client'
-animatedScrollTo = require 'animated-scrollto'
 counterpart = require 'counterpart'
 FinishedBanner = require './finished-banner'
 Classifier = require '../../classifier'
 seenThisSession = require '../../lib/seen-this-session'
 MiniCourse = require '../../lib/mini-course'
-getWorkflowsInOrder = require '../../lib/get-workflows-in-order'
 `import CustomSignInPrompt from './custom-sign-in-prompt'`
 `import WorkflowAssignmentDialog from '../../components/workflow-assignment-dialog'`
+experimentsClient = require '../../lib/experiments-client'
 
 FAILED_CLASSIFICATION_QUEUE_NAME = 'failed-classifications'
 
@@ -60,84 +57,79 @@ sessionDemoMode = false
 module.exports = React.createClass
   displayName: 'ProjectClassifyPage'
 
-  mixins: [TitleMixin, HandlePropChanges, PromiseToSetState]
+  mixins: [TitleMixin]
 
   title: 'Classify'
 
   contextTypes:
     geordi: React.PropTypes.object
 
+  propTypes:
+    loadingSelectedWorkflow: React.PropTypes.bool
+    project: React.PropTypes.object
+    workflow: React.PropTypes.object
+    simulateSaveFailure: React.PropTypes.bool
+
   getDefaultProps: ->
-    query: null
+    loadingSelectedWorkflow: false
     project: null
+    workflow: null
     simulateSaveFailure: (location?.search ? '').indexOf('simulate-classification-save-failure') isnt -1
 
   getInitialState: ->
-    workflow: null
     subject: null
     classification: null
     projectIsComplete: false
     demoMode: sessionDemoMode
     promptWorkflowAssignmentDialog: false
-
-  propChangeHandlers:
-    project: 'loadAppropriateClassification'
-    query: 'loadAppropriateClassification'
+    rejected: null
 
   componentDidMount: () ->
-    @getCurrentWorkflow().then (workflow) =>
-      @setState {workflow}
+    if @props.workflow and not @props.loadingSelectedWorkflow
+      @loadAppropriateClassification(@props)
 
   componentWillUpdate: (nextProps, nextState) ->
-    @context.geordi.remember workflowID: nextState?.workflow?.id
+    @context.geordi.remember workflowID: nextProps?.workflow?.id
 
   componentWillUnmount: () ->
     @context.geordi?.forget ['workflowID']
 
   componentWillReceiveProps: (nextProps) ->
-    @shouldWorkflowAssignmentPrompt(nextProps.preferences)
+    if @props.project isnt nextProps.project
+      @loadAppropriateClassification(nextProps)
+    unless nextProps.loadingSelectedWorkflow
+      if @props.workflow isnt nextProps.workflow
+        # Clear out current classification
+        currentClassifications.forWorkflow[@props.workflow?.id] = null
+        @setState { classification: null }
+        @loadAppropriateClassification(nextProps)
+    if nextProps.loadingSelectedWorkflow is false and nextProps.user isnt null
+      @shouldWorkflowAssignmentPrompt(nextProps)
 
-  shouldWorkflowAssignmentPrompt: (preferences) ->
+  shouldWorkflowAssignmentPrompt: (nextProps) ->
     # Only for Gravity Spy which is assigning workflows to logged in users
-    assignedWorkflowID = preferences?.settings?.workflow_id
-    if @props.project.experimental_tools.indexOf('workflow assignment') > -1 and @props.user?
-      if assignedWorkflowID? and assignedWorkflowID isnt @props.location.query.workflow
+    if nextProps.project.experimental_tools.indexOf('workflow assignment') > -1
+      assignedWorkflowID = nextProps.preferences?.settings?.workflow_id
+      currentWorkflowID = @props.preferences?.preferences.selected_workflow
+      if assignedWorkflowID? and currentWorkflowID? and assignedWorkflowID isnt currentWorkflowID
         @setState promptWorkflowAssignmentDialog: true if @state.promptWorkflowAssignmentDialog is false
 
-  loadAppropriateClassification: (_, props = @props) ->
-    # To load the right classification, we'll need to know which workflow the user expects.
-    # console.log 'Loading appropriate classification'
-    @promiseToSetState classification: @getCurrentWorkflow(props).then (workflow) =>
-      # console.log 'Loading classification for workflow', workflow.id
-      # Create a classification if it doesn't exist for the chosen workflow, then resolve our state with it.
-      currentClassifications.forWorkflow[workflow.id] ?= @createNewClassification props.project, workflow
-      currentClassifications.forWorkflow[workflow.id]
+  loadAppropriateClassification: (props) ->
+    # Create a classification if it doesn't exist for the chosen workflow, then resolve our state with it.
+    if @state.rejected?.classification?
+      @setState rejected: null
 
-  getCurrentWorkflow: (props = @props) ->
-    if props.location.query?.workflow?
-      # console.log 'Workflow specified as', props.location.query.workflow
-      # Prefer the workflow specified in the query.
-      @getWorkflow props.project, props.location.query.workflow
+    if currentClassifications.forWorkflow[props.workflow.id]
+      @setState { classification: currentClassifications.forWorkflow[props.workflow.id] }
     else
-      # If no workflow is specified, pick a random one and record it for later.
-      # When we send this classification, we'll clear this value to select a new random workflow.
-      currentWorkflowForProject[props.project.id] ?= @getRandomWorkflow props.project
-      currentWorkflowForProject[props.project.id]
-
-  getRandomWorkflow: (project) ->
-    getWorkflowsInOrder(project, {active: true, fields: 'finished_at'}).then (workflows) =>
-      if workflows.length is 0
-        throw new Error "No workflows for project #{project.id}"
-        project.uncacheLink 'workflows'
-      else
-        projectIsComplete = (true for workflow in workflows when not workflow.finished_at?).length is 0
-        @setState {projectIsComplete}
-        randomIndex = Math.floor Math.random() * workflows.length
-        # console.log 'Chose random workflow', workflows[randomIndex].id
-        @getWorkflow project, workflows[randomIndex].id
+      @createNewClassification(props.project, props.workflow)
+        .then (classification) =>
+          currentClassifications.forWorkflow[props.workflow.id] = classification
+          @setState { classification }
+        .catch (error) =>
+          @setState rejected: { classification: error }
 
   createNewClassification: (project, workflow) ->
-    @setState {workflow}
     # A subject set is only specified if the workflow is grouped.
     getSubjectSet = if workflow.grouped
       workflow.get('subject_sets').then (subjectSets) =>
@@ -172,14 +164,6 @@ module.exports = React.createClass
 
       classification
 
-  getWorkflow: (project, workflowID) ->
-    # console.log 'Getting workflow', workflowID
-    # We could just get the workflow directly, but this way we ensure the workflow belongs to the project.
-    project.get('workflows', id: workflowID).then ([workflow]) ->
-      unless workflow?
-        throw new Error "No workflow #{workflowID} for project #{project.id}"
-      workflow
-
   getNextSubject: (project, workflow, subjectSet) ->
     # console.log 'Getting next subject for', workflow.id
     # Make sure a list of subjects exists for this workflow.
@@ -193,7 +177,7 @@ module.exports = React.createClass
     # If there aren't any left (or there weren't any to begin with), refill the list.
     if upcomingSubjects.forWorkflow[workflow.id].length is 0
       # console.log 'Fetching subjects'
-      @maybePromptWorkflowAssignmentDialog()
+      @maybePromptWorkflowAssignmentDialog(@props)
       subjectQuery =
         workflow_id: workflow.id
         sort: 'queued' unless SKIP_CELLECT
@@ -230,7 +214,7 @@ module.exports = React.createClass
 
   render: ->
     <div className="classify-page content-container">
-      {if @state.projectIsComplete
+      {if @props.projectIsComplete
         <FinishedBanner project={@props.project} />}
 
       {if @props.project.experimental_tools.indexOf('workflow assignment') > -1 and not @props.user # Gravity Spy
@@ -241,27 +225,17 @@ module.exports = React.createClass
         <Classifier
           {...@props}
           classification={@state.classification}
-          onLoad={@scrollIntoView}
           demoMode={@state.demoMode}
           onChangeDemoMode={@handleDemoModeChange}
           onComplete={@saveClassification}
           onCompleteAndLoadAnotherSubject={@saveClassificationAndLoadAnotherSubject}
           onClickNext={@loadAnotherSubject}
         />
-      else if @state.rejected.classification?
-        <code>{@state.rejected.classification.toString()}</code>
+      else if @state.rejected?.classification?
+        <code>Please try again. Something went wrong: {@state.rejected.classification.toString()}</code>
       else
         <span>Loading classification</span>}
     </div>
-
-  scrollIntoView: (e) ->
-    # Auto-scroll to top of the classification interface on load.
-    # It's not perfect, but it should make the location of everything more obvious.
-    lineHeight = parseFloat getComputedStyle(document.body).lineHeight
-    node = ReactDOM.findDOMNode(@)
-    idealScrollY = node.offsetTop - lineHeight
-    if Math.abs(idealScrollY - scrollY) > lineHeight
-      animatedScrollTo document.body, node.offsetTop - lineHeight, 333
 
   handleDemoModeChange: (newDemoMode) ->
     sessionDemoMode = newDemoMode
@@ -272,7 +246,11 @@ module.exports = React.createClass
       .then @loadAnotherSubject()
 
   saveClassification: ->
-    @context.geordi?.logEvent type: 'classify'
+    if @context.geordi.keys["experiment"]?
+      experimentsClient.logExperimentState @context.geordi, interventionMonitor?.latestFromSugar, "classificationStart"
+    else
+      @context.geordi?.logEvent type: 'classify'
+
     classification = @state.classification
     console?.info 'Completed classification', classification
     savingClassification = if @state.demoMode
@@ -288,12 +266,10 @@ module.exports = React.createClass
           console?.log 'Demo mode: Did NOT save classification'
         else
           console?.log 'Saved classification', classification.id
-          Promise.all([
-            classification.get 'workflow'
-            classification.get 'subjects'
-          ]).then ([workflow, subjects]) ->
-            seenThisSession.add workflow, subjects
-            classification.destroy()
+          classification.get('subjects')
+            .then (subjects) =>
+              seenThisSession.add @props.workflow, subjects
+              classification.destroy()
         @saveAllQueuedClassifications()
       .catch (error) =>
         console?.warn 'Failed to save classification:', error
@@ -333,31 +309,30 @@ module.exports = React.createClass
             console?.error 'Failed to save a queued classification:', error
 
   loadAnotherSubject: ->
-    @getCurrentWorkflow(@props).then (workflow) =>
-      # Forget the old classification so a new one will load.
-      currentClassifications.forWorkflow[workflow.id] = null
-      # Forget the old workflow, unless it was specified, so we'll get a random one next time.
-      unless @props.location.query?.workflow?
-        currentWorkflowForProject[@props.project.id] = null
-      @loadAppropriateClassification()
+    # Forget the old classification so a new one will load.
+    currentClassifications.forWorkflow[@props.workflow.id] = null
+
+    @loadAppropriateClassification(@props) if @props.workflow?
 
   maybeLaunchMiniCourse: ->
     if classificationsThisSession % PROMPT_MINI_COURSE_EVERY is 0
-      MiniCourse.startIfNecessary {workflow: @state.workflow, preferences: @props.preferences, project: @props.project, user: @props.user}
+      MiniCourse.startIfNecessary({
+        workflow: @props.workflow,
+        preferences: @props.preferences,
+        project: @props.project,
+        user: @props.user
+      })
 
-  maybePromptWorkflowAssignmentDialog: (nextWorkflow) ->
+  maybePromptWorkflowAssignmentDialog: (props) ->
     if @state.promptWorkflowAssignmentDialog
-      WorkflowAssignmentDialog.start(@props.history, @props.location, @props.preferences)
+      WorkflowAssignmentDialog.start()
         .then =>
-          @loadAnotherSubject()
-
-          if @props.location.query.workflow isnt @props.preferences.preferences.selected_workflow
-            @props.preferences.update({ 'preferences.selected_workflow': @props.preferences?.settings?.workflow_id });
-            @props.preferences.save()
-              .then =>
-                @setState promptWorkflowAssignmentDialog: false
-          else
-            @setState promptWorkflowAssignmentDialog: false
+          @setState { promptWorkflowAssignmentDialog: false }
+        .then =>
+          if props.preferences.selected_workflow isnt props.preferences.settings.workflow_id
+            props.preferences.update
+              'preferences.selected_workflow': props.preferences.settings.workflow_id
+            props.preferences.save()
 
                
 # For debugging:
